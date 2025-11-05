@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Steam Saver — Mini Tool</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial;--bg:#0f2633;--card:#122936;--muted:#9fb1bd;--accent:#1db954}
+    body{margin:0;background:linear-gradient(180deg,#071721 0%, #0b2b36 100%);color:#e6f6f7;padding:18px}
+    .wrap{max-width:980px;margin:8px auto}
+    header{display:flex;align-items:center;gap:12px}
+    h1{margin:0;font-size:20px}
+    p.lead{margin:6px 0 18px;color:var(--muted)}
+    textarea{width:100%;min-height:80px;background:var(--card);border:1px solid rgba(255,255,255,0.03);color:inherit;padding:10px;border-radius:8px}
+    .controls{display:flex;gap:8px;margin-top:8px}
+    button{background:var(--accent);border:none;color:#012;padding:8px 12px;border-radius:8px;cursor:pointer}
+    button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:18px}
+    .card{background:var(--card);padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,0.02)}
+    .price{font-weight:700}
+    .muted{color:var(--muted);font-size:13px}
+    .ok{color:#7ee787}
+    .bad{color:#ff7b7b}
+    footer{margin-top:18px;color:var(--muted);font-size:13px}
+    .bolt{font-weight:700;color:var(--accent)}
+    pre{background:#071a1f;padding:8px;border-radius:6px;overflow:auto}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Steam Saver — Mini tool</h1>
+        <p class="lead">Kichik demo: Steam store appdetails API orqali o'yin narxini tekshiradi. <span class="bolt">Paste Steam URLs yoki appIDs</span>, "Check" bos.</p>
+      </div>
+    </header>
+
+    <label>Steam appIDs yoki to'liq Steam store URL'larini satrga kiriting (har biri yangi qatorda):</label>
+    <textarea id="input" placeholder="https://store.steampowered.com/app/578080/PlayerName/\n570\n730"></textarea>
+    <div class="controls">
+      <button id="check">Check</button>
+      <button id="sample" class="ghost">Load sample (demo)</button>
+      <button id="clear" class="ghost">Clear</button>
+    </div>
+
+    <div id="result" class="grid" aria-live="polite"></div>
+
+    <section style="margin-top:18px">
+      <div class="card">
+        <h3 style="margin:0 0 8px 0">Qanday ishlaydi (qisqacha)</h3>
+        <ol class="muted">
+          <li>Har bir appID uchun <code>https://store.steampowered.com/api/appdetails?appids=APPID&cc=us&l=en</code> so'rovi yuboriladi.</li>
+          <li>Natijada <strong>is_free</strong>, <strong>price_overview</strong> va kategoriyalar olinadi.</li>
+          <li>Agar <em>is_free</em> true bo'lsa yoki narx juda arzon bo'lsa, cardda "🔥 Cheap/Free" belgilanadi.</li>
+        </ol>
+        <p class="muted">Bu mini demo — keyin trading-card event, wishlist-sale notifier yoki Telegram botga kengaytirish mumkin.</p>
+      </div>
+    </section>
+
+    <footer>
+      <div>Keyingi qadamlar: 1) Discord/Telegram bot, 2) avtomatik cron/hosting (Replit/GH Actions), 3) Steam jamoasiga post + artwork. Xohlasang bularning hammasini birma-bir sozlab beraman.</div>
+    </footer>
+  </div>
+
+<script>
+  const elInput = document.getElementById('input');
+  const elResult = document.getElementById('result');
+  const btn = document.getElementById('check');
+  const sample = document.getElementById('sample');
+  const clear = document.getElementById('clear');
+
+  sample.addEventListener('click', ()=>{
+    elInput.value = '578080\n570\n730';
+  });
+  clear.addEventListener('click', ()=>{elInput.value='';elResult.innerHTML='';});
+
+  btn.addEventListener('click', async ()=>{
+    elResult.innerHTML = '';
+    const raw = elInput.value.trim();
+    if(!raw) return alert('AppID yoki URL kiriting.');
+    const lines = raw.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+    const appids = lines.map(parseAppId).filter(Boolean);
+    if(appids.length===0){alert('Hech qanday appID topilmadi. Iltimos URL yoki raqam kiriting.');return}
+
+    for(const id of appids){
+      const card = document.createElement('div'); card.className='card'; card.innerHTML = '<div class="muted">Loading '+id+'…</div>';
+      elResult.appendChild(card);
+      try{
+        const res = await fetch('https://store.steampowered.com/api/appdetails?appids='+encodeURIComponent(id)+'&cc=us&l=en');
+        if(!res.ok) throw new Error('Network');
+        const json = await res.json();
+        if(!json[id] || !json[id].success){
+          card.innerHTML = '<div class="muted">App '+id+' not found or API blocked.</div>';
+          continue;
+        }
+        const data = json[id].data;
+        const title = data.name || ('App '+id);
+        const is_free = !!data.is_free;
+        const price = data.price_overview ? (data.price_overview.final/100).toFixed(2) : null;
+        const currency = data.price_overview ? data.price_overview.currency : '';
+        const categories = (data.categories||[]).map(c=>c.description).join(', ');
+        const genres = (data.genres||[]).map(g=>g.description).join(', ');
+
+        let flag = '';
+        if(is_free) flag = '<span class="ok">🔥 FREE</span>';
+        else if(price !== null && parseFloat(price) <= 1.0) flag = '<span class="ok">🔥 Cheap (<= $1)</span>';
+        else flag = '<span class="muted">Normal price</span>';
+
+        card.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div style="font-weight:700">${escapeHtml(title)}</div>
+              <div class="muted">AppID: ${id} • ${genres?genres+' • ':''}${categories}</div>
+            </div>
+            <div style="text-align:right">
+              <div class="price">${is_free?'<span class="ok">FREE</span>':(price?('$'+price+' '+currency):'<span class="muted">N/A</span>')}</div>
+              <div style="font-size:12px">${flag}</div>
+            </div>
+          </div>
+          <div style="margin-top:8px" class="muted">${data.short_description ? truncate(data.short_description,140) : ''}</div>
+        `;
+
+      }catch(err){
+        card.innerHTML = '<div class="bad">Error fetching '+id+': '+escapeHtml(err.message||String(err))+'</div>';
+      }
+    }
+  });
+
+  function parseAppId(s){
+    // If it's a number, return it. If it's a Steam URL, extract /app/ID/
+    const num = s.match(/^\d+$/);
+    if(num) return num[0];
+    const m = s.match(/steampowered\.com\/app\/(\d+)/i);
+    if(m) return m[1];
+    return null;
+  }
+  function escapeHtml(t){return (t+'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
+  function truncate(s,n){if(!s) return ''; return s.length>n? s.slice(0,n-1)+'…':s}
+</script>
+</body>
+</html>
