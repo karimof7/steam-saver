@@ -145,6 +145,173 @@
   function escapeHtml(t){return (t+'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
   function truncate(s,n){if(!s) return ''; return s.length>n? s.slice(0,n-1)+'…':s}
 </script>
+<!-- START: Enhanced Steam Saver script -->
+<script>
+(async () => {
+  // ---------- CONFIG ----------
+  // agar Cloudflare Worker yoki boshqa proxy ishlatayotgan bo'lsang shu URLni qo'y:
+  // const proxyBase = 'https://your-worker.example.workers.dev/proxy?u=';
+  const proxyBase = ''; // agar CORS muammosi yo'q bo'lsa bo'sh qoldir
+
+  const ratesAPI = 'https://api.exchangerate.host/latest?base=USD'; // conversion
+  let rates = { UZS: 0 };
+
+  // ---------- DOM refs ----------
+  const inputArea = document.getElementById('appInput') || document.querySelector('#app-input') || null;
+  const checkBtn = document.getElementById('checkBtn') || document.querySelector('#check-btn') || null;
+  const resultsDiv = document.getElementById('results') || document.querySelector('#results') || null;
+  const currencyToggle = document.getElementById('currencyToggle') || null;
+  const favoritesBtn = document.getElementById('showFavs') || null;
+
+  // fallback: create minimal UI if not present
+  function ensureUI() {
+    if (!inputArea) {
+      const container = document.createElement('div');
+      container.innerHTML = `
+        <textarea id="appInput" rows="3" style="width:100%" placeholder="Paste AppIDs or Store URLs, one per line"></textarea>
+        <div style="margin:8px 0">
+          <button id="checkBtn">Check</button>
+          <button id="showFavs">Favorites</button>
+          <label style="margin-left:12px"><input type="checkbox" id="currencyToggle"> Show in UZS</label>
+        </div>
+        <div id="results"></div>
+      `;
+      document.body.prepend(container);
+    }
+  }
+  ensureUI();
+
+  // re-get refs if created
+  const _input = document.getElementById('appInput');
+  const _check = document.getElementById('checkBtn');
+  const _results = document.getElementById('results');
+  const _currency = document.getElementById('currencyToggle');
+  const _favBtn = document.getElementById('showFavs');
+
+  // ---------- Helpers ----------
+  function parseLines(text){
+    return text.split('\n').map(l => l.trim()).filter(Boolean).map(l=>{
+      // if it's a url like https://store.steampowered.com/app/570/...
+      const m = l.match(/\/app\/(\d+)/);
+      if(m) return m[1];
+      // if it is numeric appid
+      if(/^\d+$/.test(l)) return l;
+      // maybe it's store link with appid param
+      const m2 = l.match(/appids=(\d+)/);
+      if(m2) return m2[1];
+      return null;
+    }).filter(Boolean);
+  }
+
+  function renderGames(list, showUZS=false){
+    _results.innerHTML = '';
+    if(!list.length) { _results.innerHTML = '<p>No results</p>'; return; }
+    list.forEach(g=>{
+      const card = document.createElement('div');
+      card.style = "border:1px solid #333;padding:10px;margin:8px 0;border-radius:6px;display:flex;gap:12px;align-items:flex-start";
+      const img = document.createElement('img'); img.src = g.header_image || ''; img.width = 120;
+      const meta = document.createElement('div'); meta.style = "flex:1";
+      const title = document.createElement('h3'); title.textContent = g.name;
+      const desc = document.createElement('div'); desc.innerHTML = (g.short_description || '').slice(0,200) + (g.short_description && g.short_description.length>200 ? '...' : '');
+      let priceText = 'N/A';
+      if(g.is_free) priceText = '<strong style="color:green">FREE</strong>';
+      else if(g.price_overview) {
+        const usd = (g.price_overview.final/100).toFixed(2);
+        priceText = `$${usd}`;
+        if(showUZS && rates.UZS) {
+          const uzs = Math.round(parseFloat(usd) * rates.UZS);
+          priceText += ` (~${uzs} UZS)`;
+        }
+      }
+      const priceDiv = document.createElement('div'); priceDiv.innerHTML = `<div>Price: ${priceText}</div>`;
+      const controls = document.createElement('div');
+      const saveBtn = document.createElement('button');
+      saveBtn.textContent = isFavorite(g.steam_appid) ? 'Unsave' : 'Save';
+      saveBtn.onclick = () => { toggleFavorite(g); saveBtn.textContent = isFavorite(g.steam_appid) ? 'Unsave' : 'Save'; };
+      controls.appendChild(saveBtn);
+      meta.appendChild(title); meta.appendChild(priceDiv); meta.appendChild(desc); meta.appendChild(controls);
+      card.appendChild(img); card.appendChild(meta);
+      _results.appendChild(card);
+    });
+  }
+
+  // ---------- Favorites (localStorage) ----------
+  const FAV_KEY = 'steam_saver_favs_v1';
+  function getFavs(){ try { return JSON.parse(localStorage.getItem(FAV_KEY)||'[]'); } catch(e){ return []; } }
+  function saveFavs(a){ localStorage.setItem(FAV_KEY, JSON.stringify(a)); }
+  function isFavorite(appid){ return getFavs().includes(String(appid)); }
+  function toggleFavorite(game){
+    const favs = getFavs();
+    const id = String(game.steam_appid || game.appid || game.appid_raw || '');
+    const idx = favs.indexOf(id);
+    if(idx>=0) favs.splice(idx,1); else favs.push(id);
+    saveFavs(favs);
+    alert(idx>=0 ? 'Removed from favorites' : 'Saved to favorites');
+  }
+
+  // ---------- Fetch conversion rates ----------
+  async function getRates(){
+    try {
+      const r = await fetch(ratesAPI);
+      const j = await r.json();
+      if(j && j.rates && j.rates.UZS) rates.UZS = j.rates.UZS;
+    } catch(e){ console.warn('Rate fetch failed', e); }
+  }
+
+  // ---------- Fetch game data ----------
+  async function fetchAppDetails(appid){
+    try {
+      const url = `https://store.steampowered.com/api/appdetails?appids=${appid}&cc=us&l=en`;
+      const full = proxyBase ? proxyBase + encodeURIComponent(url) : url;
+      const res = await fetch(full);
+      if(!res.ok) return null;
+      const j = await res.json();
+      if(!j || !j[appid] || !j[appid].success) return null;
+      const d = j[appid].data;
+      d.steam_appid = appid;
+      return d;
+    } catch(e){ console.warn('fetch error', e); return null; }
+  }
+
+  // ---------- Main worker ----------
+  async function checkAndRender(){
+    const txt = (_input.value || '');
+    const ids = parseLines(txt);
+    if(!ids.length) { _results.innerHTML = '<p>No AppIDs provided</p>'; return; }
+    _results.innerHTML = '<p>Loading...</p>';
+    await getRates(); // try fetch rates
+    const promises = ids.map(id => fetchAppDetails(id));
+    const results = await Promise.all(promises);
+    const cleaned = results.filter(Boolean);
+    renderGames(cleaned, _currency && _currency.checked);
+  }
+
+  // ---------- Favorites view ----------
+  async function showFavorites(){
+    const favs = getFavs();
+    if(!favs.length){ alert('No favorites yet'); return; }
+    _results.innerHTML = '<p>Loading favorites...</p>';
+    await getRates();
+    const promises = favs.map(id => fetchAppDetails(id));
+    const results = (await Promise.all(promises)).filter(Boolean);
+    renderGames(results, _currency && _currency.checked);
+  }
+
+  // ---------- Event bindings ----------
+  _check.addEventListener('click', e => { checkAndRender(); });
+  if(_favBtn) _favBtn.addEventListener('click', e => showFavorites());
+  if(_currency) _currency.addEventListener('change', e => { /* re-render if results exist: simple approach: re-check */ checkAndRender(); });
+
+  // Optional: support Enter+Ctrl to check
+  _input.addEventListener('keydown', e=> { if(e.key==='Enter' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); checkAndRender(); } });
+
+  // Auto-load favorites on start? (optional)
+  // if(getFavs().length) showFavorites();
+
+})();
+</script>
+<!-- END: Enhanced Steam Saver script -->
+
 </body>
 </html>
 "<!-- rebuild $(date) -->" 
